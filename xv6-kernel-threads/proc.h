@@ -63,6 +63,8 @@ struct thread {
   struct context *context;     // swtch() here to run process
   void *chan;                  // If non-zero, sleeping on chan
   int killed;                  // If non-zero, have been killed
+  int joined;                  // Has a successful join occurred?
+  int joiners;                 // Number of active join calls
 };
 
 // Per-process state
@@ -76,7 +78,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-  struct thread threads[NTHREAD]; // static thread array
+  struct thread *lifecycle_owner;
+  int exiting;
+  struct thread threads[NTHREAD];
 };
 
 

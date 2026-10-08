@@ -7,8 +7,6 @@
 #include "proc.h"
 #include "spinlock.h"
 
-extern char getSharedCounter(int index);
-
 void clearThread(struct thread * t);
 
 struct {
@@ -25,6 +23,8 @@ extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+static int kill_others(int for_exec);
+static void kill_all(void);
 
 void
 pinit(void)
@@ -33,49 +33,49 @@ pinit(void)
 }
 
 struct thread*
-allocthread(struct proc * p)
+allocthread(struct proc *p)
 {
   struct thread *t;
   char *sp;
-  int found = 0;
 
-  for(t = p->threads; found != 1 && t < &p->threads[NTHREAD]; t++)
-  {
+  for(t = p->threads; t < &p->threads[NTHREAD]; t++){
     if(t->state == TUNUSED)
-    {
-      found = 1;
-      t--;
-    }
-    else if(t->state == TZOMBIE)
-    {
+      goto found;
+  }
+
+  for(t = p->threads; t < &p->threads[NTHREAD]; t++){
+    if(t->state == TZOMBIE &&
+       t->joined && t->joiners == 0){
       clearThread(t);
-      t->state = TUNUSED;
-      found = 1;
-      t--;
+      goto found;
     }
   }
 
-  if(!found)
-    return 0;
+  return 0;
 
+found:
   t->tid = nexttid++;
   t->state = TEMBRYO;
   t->parent = p;
   t->killed = 0;
+  t->chan = 0;
+  t->joined = 0;
+  t->joiners = 0;
 
-  // Allocate kernel stack.
   if((t->kstack = kalloc()) == 0){
+    t->tid = 0;
+    t->parent = 0;
+    t->tf = 0;
+    t->context = 0;
     t->state = TUNUSED;
     return 0;
   }
+
   sp = t->kstack + KSTACKSIZE;
 
-  // Leave room for trap frame.
   sp -= sizeof *t->tf;
   t->tf = (struct trapframe*)sp;
 
-  // Set up new context to start executing at forkret,
-  // which returns to trapret.
   sp -= 4;
   *(uint*)sp = (uint)trapret;
 
@@ -109,18 +109,17 @@ allocproc(void)
 found:
   p->state = USED;
   p->pid = nextpid++;
+  p->killed = 0;
+  p->lifecycle_owner = 0;
+  p->exiting = 0;
+
+  memset(p->threads, 0, sizeof(p->threads));
 
   t = allocthread(p);
-
-  if(t == 0)
-  {
+  if(t == 0){
     p->state = UNUSED;
     return 0;
   }
-  p->threads[0] = *t;
-
-  for(t = p->threads; t < &p->threads[NTHREAD]; t++)
-    t->state = TUNUSED;
 
   return p;
 }
@@ -166,20 +165,58 @@ int
 growproc(int n)
 {
   uint sz;
+  int locked_here = !holding(&ptable.lock);
+
+  if(locked_here)
+    acquire(&ptable.lock);
+
+  if(proc->killed || thread->killed || proc->lifecycle_owner)
+    goto bad;
 
   sz = proc->sz;
+
   if(n > 0){
-    if((sz = allocuvm(proc->pgdir, sz, sz + n)) == 0){
-      return -1;
-    }
+    if((uint)n >= KERNBASE - sz)
+      goto bad;
+
+    if((sz = allocuvm(proc->pgdir, sz, sz + (uint)n)) == 0)
+      goto bad;
   } else if(n < 0){
-    if((sz = deallocuvm(proc->pgdir, sz, sz + n)) == 0){
-      return -1;
-    }
+    if(0U - (uint)n > sz)
+      goto bad;
+
+    sz = deallocuvm(proc->pgdir, sz, sz + (uint)n);
   }
+
   proc->sz = sz;
   switchuvm(proc);
+
+  if(locked_here)
+    release(&ptable.lock);
+
   return 0;
+
+bad:
+  if(locked_here)
+    release(&ptable.lock);
+
+  return -1;
+}
+
+
+int
+growproc_sbrk(int n)
+{
+  int addr;
+
+  acquire(&ptable.lock);
+
+  addr = proc->sz;
+  if(growproc(n) < 0)
+    addr = -1;
+
+  release(&ptable.lock);
+  return addr;
 }
 
 // Create a new process copying p as the parent.
@@ -193,6 +230,10 @@ fork(void)
   struct thread *nt;
 
   acquire(&ptable.lock);
+  if(proc->killed || thread->killed || proc->lifecycle_owner){
+    release(&ptable.lock);
+    return -1;
+  }
 
   // Allocate process.
   if((np = allocproc()) == 0){
@@ -246,7 +287,22 @@ exit(void)
   if(proc == initproc)
     panic("init exiting");
 
-  // Close all open files.
+  acquire(&ptable.lock);
+
+  if(proc->exiting && proc->lifecycle_owner != thread){
+    release(&ptable.lock);
+    killSelf();
+    panic("exit: killSelf returned");
+  }
+
+  proc->exiting = 1;
+  proc->lifecycle_owner = thread;
+
+  kill_all();
+
+  release(&ptable.lock);
+
+  // Siblings have stopped using the process resources.
   for(fd = 0; fd < NOFILE; fd++){
     if(proc->ofile[fd]){
       fileclose(proc->ofile[fd]);
@@ -261,10 +317,8 @@ exit(void)
 
   acquire(&ptable.lock);
 
-  // Parent might be sleeping in wait().
   wakeup1(proc->parent);
 
-  // Pass abandoned children to init.
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->parent == proc){
       p->parent = initproc;
@@ -273,25 +327,31 @@ exit(void)
     }
   }
 
-  // Jump into the scheduler, never to return.
   thread->state = TINVALID;
   proc->state = ZOMBIE;
+  proc->lifecycle_owner = 0;
 
   sched();
   panic("zombie exit");
 }
 
 void
-clearThread(struct thread * t)
+clearThread(struct thread *t)
 {
-  if(t->state == TINVALID || t->state == TZOMBIE)
+  if(t->kstack &&
+     (t->state == TINVALID || t->state == TZOMBIE))
     kfree(t->kstack);
 
   t->kstack = 0;
+  t->tf = 0;
+  t->context = 0;
+  t->chan = 0;
   t->tid = 0;
   t->state = TUNUSED;
   t->parent = 0;
   t->killed = 0;
+  t->joined = 0;
+  t->joiners = 0;
 }
 
 // Wait for a child process to exit and return its pid.
@@ -330,13 +390,13 @@ wait(void)
     }
 
     // No point waiting if we don't have any children.
-    if(!havekids || proc->killed){
+    if(!havekids || proc->killed || thread->killed){
       release(&ptable.lock);
       return -1;
     }
 
     // Wait for children to exit.  (See wakeup1 call in proc_exit.)
-    sleep(proc, &ptable.lock);  //DOC: wait-sleep
+    sleep_killable(proc, &ptable.lock);  //DOC: wait-sleep  //DOC: wait-sleep
   }
 }
 
@@ -497,6 +557,23 @@ sleep(void *chan, struct spinlock *lk)
   }
 }
 
+void
+sleep_killable(void *chan, struct spinlock *lk)
+{
+  if(lk != &ptable.lock){
+    acquire(&ptable.lock);
+    release(lk);
+  }
+
+  if(!proc->killed && !thread->killed)
+    sleep(chan, &ptable.lock);
+
+  if(lk != &ptable.lock){
+    release(&ptable.lock);
+    acquire(lk);
+  }
+}
+
 //PAGEBREAK!
 // Wake up all processes sleeping on chan.
 // The ptable lock must be held.
@@ -554,12 +631,16 @@ kill(int pid)
 // Thread won't exit until it returns
 // to user space (see trap in trap.c).
 void
-killSelf()
+killSelf(void)
 {
   acquire(&ptable.lock);
+
+  thread->state = TINVALID;
   wakeup1(thread);
-  thread->state = TINVALID; // thread must INVALID itself! - else two cpu's can run on the same thread
+  wakeup1(proc);
+
   sched();
+  panic("killSelf returned");
 }
 
 //PAGEBREAK: 36
@@ -603,4 +684,260 @@ procdump(void)
 
 
   }
+}
+
+int
+kthread_id(void)
+{
+  if(proc && thread)
+    return thread->tid;
+  return -1;
+}
+
+int
+kthread_create(void* (*start_func)(), void* stack, int stack_size)
+{
+  struct thread *t;
+  uint base, top, sp;
+  uint return_addr = 0xffffffff;
+  int tid;
+
+  base = (uint)stack;
+
+  acquire(&ptable.lock);
+
+  if(proc->killed || thread->killed || proc->lifecycle_owner){
+    release(&ptable.lock);
+    return -1;
+  }
+
+  if(start_func == 0 || (uint)start_func >= proc->sz ||
+     stack_size < (int)sizeof(uint) || base >= proc->sz ||
+     (uint)stack_size > proc->sz - base){
+    release(&ptable.lock);
+    return -1;
+  }
+
+  top = (base + (uint)stack_size) & ~15U;
+  if(top < base + sizeof(uint)){
+    release(&ptable.lock);
+    return -1;
+  }
+  sp = top - sizeof(uint);
+
+  t = allocthread(proc);
+  if(t == 0){
+    release(&ptable.lock);
+    return -1;
+  }
+
+  if(copyout(proc->pgdir, sp, &return_addr,
+             sizeof(return_addr)) < 0){
+    kfree(t->kstack);
+    memset(t, 0, sizeof(*t));
+    t->state = TUNUSED;
+    release(&ptable.lock);
+    return -1;
+  }
+
+  *t->tf = *thread->tf;
+  t->tf->esp = sp;
+  t->tf->ebp = sp;
+  t->tf->eip = (uint)start_func;
+  t->tf->eax = 0;
+
+  tid = t->tid;
+  t->state = TRUNNABLE;
+
+  release(&ptable.lock);
+  return tid;
+}
+
+void
+kthread_exit(void)
+{
+  struct thread *t;
+  int found = 0;
+
+  acquire(&ptable.lock);
+
+  for(t = proc->threads; t < &proc->threads[NTHREAD]; t++){
+    if(t != thread &&
+       t->state != TUNUSED &&
+       t->state != TZOMBIE &&
+       t->state != TINVALID){
+      found = 1;
+      break;
+    }
+  }
+
+  if(!found){
+    release(&ptable.lock);
+    exit();
+    panic("kthread_exit: exit returned");
+  }
+
+  thread->state = TZOMBIE;
+  wakeup1(thread);
+  wakeup1(proc);
+
+  sched();
+  panic("kthread_exit returned");
+}
+
+int
+kthread_join(int thread_id)
+{
+  struct thread *t;
+
+  if(thread_id <= 0 || thread_id == thread->tid)
+    return -1;
+
+  acquire(&ptable.lock);
+
+  for(t = proc->threads; t < &proc->threads[NTHREAD]; t++)
+    if(t->tid == thread_id && t->state != TUNUSED)
+      break;
+
+  if(t == &proc->threads[NTHREAD] || t->state == TINVALID){
+    release(&ptable.lock);
+    return -1;
+  }
+
+  t->joiners++;
+
+  while(t->state != TZOMBIE){
+    if(proc->killed || thread->killed || t->state == TINVALID){
+      t->joiners--;
+      release(&ptable.lock);
+      return -1;
+    }
+
+    sleep_killable(t, &ptable.lock);
+  }
+
+  if(t->kstack){
+    kfree(t->kstack);
+    t->kstack = 0;
+    t->tf = 0;
+    t->context = 0;
+  }
+
+  t->joined = 1;
+  t->joiners--;
+
+  release(&ptable.lock);
+  return 0;
+}
+
+// Caller must hold ptable.lock.
+static int
+kill_others(int for_exec)
+{
+  struct thread *t;
+  int found;
+
+  for(t = proc->threads; t < &proc->threads[NTHREAD]; t++){
+    if(t == thread || t->state == TUNUSED || t->state == TZOMBIE ||t->state == TINVALID)
+      continue;
+
+    t->killed = 1;
+    if(t->state == TSLEEPING)
+      t->state = TRUNNABLE;
+  }
+
+  for(;;){
+    if(for_exec && (proc->killed || thread->killed ||
+        proc->lifecycle_owner != thread))
+      return -1;
+
+    found = 0;
+
+    for(t = proc->threads; t < &proc->threads[NTHREAD]; t++){
+      if(t != thread &&
+         t->state != TUNUSED &&
+         t->state != TZOMBIE &&
+         t->state != TINVALID){
+        found = 1;
+        break;
+      }
+    }
+
+    if(!found)
+      return 0;
+
+    sleep(proc, &ptable.lock);
+  }
+}
+
+// Caller must hold ptable.lock.
+static void
+kill_all(void)
+{
+  proc->killed = 1;
+  kill_others(0);
+}
+
+int
+execstart(void)
+{
+  acquire(&ptable.lock);
+
+  if(proc->killed || thread->killed || proc->lifecycle_owner){
+    release(&ptable.lock);
+    return -1;
+  }
+
+  proc->lifecycle_owner = thread;
+
+  release(&ptable.lock);
+  return 0;
+}
+
+void
+execabort(void)
+{
+  acquire(&ptable.lock);
+
+  if(proc->lifecycle_owner == thread && !proc->exiting)
+    proc->lifecycle_owner = 0;
+
+  release(&ptable.lock);
+}
+
+int
+execcommit(pde_t *pgdir, uint sz, uint entry, uint sp, char *name)
+{
+  struct thread *t;
+  pde_t *oldpgdir;
+
+  acquire(&ptable.lock);
+
+  if(proc->killed || thread->killed ||
+     proc->lifecycle_owner != thread || kill_others(1) < 0){
+    release(&ptable.lock);
+    return -1;
+  }
+
+  for(t = proc->threads; t < &proc->threads[NTHREAD]; t++)
+    if(t != thread)
+      clearThread(t);
+
+  safestrcpy(proc->name, name, sizeof(proc->name));
+
+  oldpgdir = proc->pgdir;
+  proc->pgdir = pgdir;
+  proc->sz = sz;
+
+  thread->tf->eip = entry;
+  thread->tf->esp = sp;
+  thread->tf->ebp = 0;
+
+  switchuvm(proc);
+  freevm(oldpgdir);
+
+  proc->lifecycle_owner = 0;
+
+  release(&ptable.lock);
+  return 0;
 }
