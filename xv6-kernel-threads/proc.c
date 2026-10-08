@@ -516,7 +516,7 @@ wakeup1(void *chan)
     if(p->state == USED)
     {
       for(t = p->threads; t < &p->threads[NTHREAD]; t++)
-        if((t->state == TSLEEPING) || (t->state == TBLOCKED) && t->chan == chan)
+        if((t->state == TSLEEPING || t->state == TBLOCKED) && t->chan == chan)
           t->state = TRUNNABLE;
     }
 }
@@ -545,7 +545,7 @@ kill(int pid)
       p->killed = 1;
       // Wake process from sleep if necessary.
       for(t = p->threads; t < &p->threads[NTHREAD]; t++)
-        if(t->state == TSLEEPING)
+        if(t->state == TSLEEPING || t->state == TBLOCKED)
           t->state = TRUNNABLE;
 
       release(&ptable.lock);
@@ -609,4 +609,121 @@ procdump(void)
 
 
   }
+}
+
+// edited by: Qianwei Guo
+// implemented mutex methods
+int kthread_mutex_alloc(void) {
+  acquire(&mtable.lock);
+  for(int i = 0; i < MAX_MUTEXES; i++) {
+    struct kthread_mutex_t *m = &mtable.mutex[i];
+    if(m->state == MUNUSED) {
+      m->mutex_id = nextmid++;
+      m->state = MUNLOCKED;
+      m->waiting = 0;
+
+      int id = m->mutex_id;
+      release(&mtable.lock);
+      return id;
+    }
+  }
+
+  release(&mtable.lock);
+  return -1;
+}
+
+int kthread_mutex_dealloc(int mutex_id) {
+  acquire(&mtable.lock);
+  struct kthread_mutex_t *m = 0;
+  for(int i = 0; i < MAX_MUTEXES; i++) {
+    if(mtable.mutex[i].state != MUNUSED && mtable.mutex[i].mutex_id == mutex_id) {
+      m = &mtable.mutex[i];
+      break;
+    }
+  }
+
+  // mutex doesn't exist or locked or someone is waiting on it
+  if(m == 0 || m->state != MUNLOCKED || m->waiting != 0) {
+    release(&mtable.lock);
+    return -1;
+  }
+  
+  m->mutex_id = 0;
+  m->state = MUNUSED;
+  m->waiting = 0;
+  release(&mtable.lock);
+  return 0;
+}
+
+int kthread_mutex_lock(int mutex_id) {
+  acquire(&mtable.lock);
+  struct kthread_mutex_t *m = 0;
+
+  for(int i = 0; i < MAX_MUTEXES; i++) {
+    if(mtable.mutex[i].state != MUNUSED && mtable.mutex[i].mutex_id == mutex_id) {
+      m = &mtable.mutex[i];
+      break;
+    }
+  }
+  // didn't find the mutex
+  if(m == 0) {
+    release(&mtable.lock);
+    return -1;
+  }
+
+  // spin lock
+  while(m->state == MLOCKED) {
+    // process / thread have been killed
+    if(proc->killed || thread->killed) {
+      release(&mtable.lock);
+      return -1;
+    }
+
+    m->waiting++;
+    acquire(&ptable.lock);
+    release(&mtable.lock);
+
+    // change sate and put to sleep
+    if(!proc->killed && !thread->killed) {
+      thread->chan = m;
+      thread->state = TBLOCKED;
+      sched();
+      thread->chan = 0;
+    }
+
+    release(&ptable.lock);
+    acquire(&mtable.lock);
+    m->waiting--;
+  }
+
+  if(m->state != MUNLOCKED || proc->killed || thread->killed) {
+    release(&mtable.lock);
+    return -1;
+  }
+
+  // acquired the lock
+  m->state = MLOCKED;
+  release(&mtable.lock);
+  return 0;
+}
+
+int kthread_mutex_unlock(int mutex_id) {
+  acquire(&mtable.lock);
+  struct kthread_mutex_t *m = 0;
+  for(int i = 0; i < MAX_MUTEXES; i++) {
+    if(mtable.mutex[i].state != MUNUSED && mtable.mutex[i].mutex_id == mutex_id) {
+      m = &mtable.mutex[i];
+      break;
+    }
+  }
+
+  if(m == 0 || m->state != MLOCKED) {
+    release(&mtable.lock);
+    return -1;
+  }
+  
+  m->state = MUNLOCKED;
+  wakeup(m);
+  release(&mtable.lock);
+  return 0;
 }
