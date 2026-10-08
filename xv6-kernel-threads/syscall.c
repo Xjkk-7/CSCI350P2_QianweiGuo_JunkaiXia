@@ -100,6 +100,13 @@ extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_procdump(void);
 
+// edited by: Qianwei Guo
+// register syscall for mutex
+extern int sys_kthread_mutex_alloc(void);
+extern int sys_kthread_mutex_dealloc(void);
+extern int sys_kthread_mutex_lock(void);
+extern int sys_kthread_mutex_unlock(void);
+
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
 [SYS_exit]    sys_exit,
@@ -123,6 +130,10 @@ static int (*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_procdump] sys_procdump,
+[SYS_kthread_mutex_alloc] sys_kthread_mutex_alloc,
+[SYS_kthread_mutex_dealloc] sys_kthread_mutex_dealloc,
+[SYS_kthread_mutex_lock] sys_kthread_mutex_lock,
+[SYS_kthread_mutex_unlock] sys_kthread_mutex_unlock,
 };
 
 
