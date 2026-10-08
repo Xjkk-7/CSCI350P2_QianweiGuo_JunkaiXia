@@ -16,6 +16,11 @@ struct {
   struct proc proc[NPROC];
 } ptable;
 
+struct {
+  struct spinlock lock;
+  struct kthread_mutex_t mutex[MAX_MUTEXES];
+} mtable;
+
 static struct proc *initproc;
 
 int nextpid = 1;
@@ -30,6 +35,7 @@ void
 pinit(void)
 {
   initlock(&ptable.lock, "ptable");
+  initlock(&mtable.lock, "mtable");
 }
 
 struct thread*
@@ -510,7 +516,7 @@ wakeup1(void *chan)
     if(p->state == USED)
     {
       for(t = p->threads; t < &p->threads[NTHREAD]; t++)
-        if(t->state == TSLEEPING && t->chan == chan)
+        if((t->state == TSLEEPING) || (t->state == TBLOCKED) && t->chan == chan)
           t->state = TRUNNABLE;
     }
 }

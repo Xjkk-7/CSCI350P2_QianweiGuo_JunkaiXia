@@ -52,7 +52,16 @@ struct context {
 };
 
 enum procstate { UNUSED, USED, ZOMBIE };                                // state of a dying process.
-enum threadstate { TUNUSED, TEMBRYO, TSLEEPING, TRUNNABLE, TRUNNING, TZOMBIE, TINVALID };
+enum threadstate { TUNUSED, TEMBRYO, TSLEEPING, TRUNNABLE, TRUNNING, TZOMBIE, TINVALID, TBLOCKED };
+
+// edited by: Qianwei Guo
+// enum to keep track of mutex state
+enum mutexstate { MUNUSED, MLOCKED, MUNLOCKED};
+struct kthread_mutex_t {
+  int mutex_id;
+  enum mutexstate state;
+  int waiting;
+};
 
 struct thread {
   int tid;                     // Thread ID
