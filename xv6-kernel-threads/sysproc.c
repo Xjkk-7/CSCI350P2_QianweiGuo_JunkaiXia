@@ -45,15 +45,12 @@ sys_getpid(void)
 int
 sys_sbrk(void)
 {
-  int addr;
   int n;
 
   if(argint(0, &n) < 0)
     return -1;
-  addr = proc->sz;
-  if(growproc(n) < 0)
-    return -1;
-  return addr;
+
+  return growproc_sbrk(n);
 }
 
 int
@@ -64,15 +61,19 @@ sys_sleep(void)
 
   if(argint(0, &n) < 0)
     return -1;
+
   acquire(&tickslock);
   ticks0 = ticks;
+
   while(ticks - ticks0 < n){
-    if(proc->killed){
+    if(proc->killed || thread->killed){
       release(&tickslock);
       return -1;
     }
-    sleep(&ticks, &tickslock);
+
+    sleep_killable(&ticks, &tickslock);
   }
+
   release(&tickslock);
   return 0;
 }
@@ -126,4 +127,41 @@ int sys_kthread_mutex_unlock(void) {
   }
 
   return kthread_mutex_unlock(mutex_id);
+}
+
+int
+sys_kthread_id(void)
+{
+  return kthread_id();
+}
+
+int
+sys_kthread_create(void)
+{
+  int start_addr;
+  int stack_addr;
+  int stack_size;
+
+  if(argint(0, &start_addr) < 0 || argint(1, &stack_addr) < 0 ||argint(2, &stack_size) < 0)
+    return -1;
+
+  return kthread_create( (void* (*)())start_addr,(void*)stack_addr, stack_size );
+}
+
+int
+sys_kthread_exit(void)
+{
+  kthread_exit();
+  return 0;  // Not reached.
+}
+
+int
+sys_kthread_join(void)
+{
+  int tid;
+
+  if(argint(0, &tid) < 0)
+    return -1;
+
+  return kthread_join(tid);
 }

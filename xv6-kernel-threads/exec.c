@@ -16,11 +16,12 @@ exec(char *path, char **argv)
   struct elfhdr elf;
   struct inode *ip;
   struct proghdr ph;
-  pde_t *pgdir, *oldpgdir;
-
+  pde_t *pgdir;
+  if(execstart() < 0) return -1;
   begin_op();
   if((ip = namei(path)) == 0){
     end_op();
+    execabort();
     return -1;
   }
   ilock(ip);
@@ -88,16 +89,10 @@ exec(char *path, char **argv)
   for(last=s=path; *s; s++)
     if(*s == '/')
       last = s+1;
-  safestrcpy(proc->name, last, sizeof(proc->name));
 
-  // Commit to the user image.
-  oldpgdir = proc->pgdir;
-  proc->pgdir = pgdir;
-  proc->sz = sz;
-  thread->tf->eip = elf.entry;  // main
-  thread->tf->esp = sp;
-  switchuvm(proc);
-  freevm(oldpgdir);
+  if(execcommit(pgdir, sz, elf.entry, sp, last) < 0)
+    goto bad;
+
   return 0;
 
  bad:
@@ -107,5 +102,6 @@ exec(char *path, char **argv)
     iunlockput(ip);
     end_op();
   }
+  execabort();
   return -1;
 }

@@ -115,7 +115,12 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
-void 			killSelf(void);
+void 		killSelf(void);
+int             growproc_sbrk(int);
+void            sleep_killable(void*, struct spinlock*);
+int             execstart(void);
+void            execabort(void);
+int             execcommit(uint*, uint, uint, uint, char*);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
