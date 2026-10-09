@@ -99,6 +99,8 @@ extern int sys_wait(void);
 extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_procdump(void);
+// edited by: Junkai Xia
+// Declare the four kernel thread syscall handlers.
 extern int sys_kthread_id(void);
 extern int sys_kthread_create(void);
 extern int sys_kthread_exit(void);
