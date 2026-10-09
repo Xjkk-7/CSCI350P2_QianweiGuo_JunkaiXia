@@ -89,6 +89,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  //edited by: Junkai Xia
+  // Coordinate exec and exit so process resources are cleaned up safely.
   struct thread *lifecycle_owner;
   int exiting;
   struct thread threads[NTHREAD];
