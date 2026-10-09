@@ -55,6 +55,8 @@ sys_sbrk(void)
   return growproc_sbrk(n);
 }
 
+// edited by: Junkai Xia
+// Check thread termination requests and use cancellation-aware sleep.
 int
 sys_sleep(void)
 {
@@ -100,6 +102,7 @@ sys_procdump(void)
   return 0;
 }
 
+
 int sys_kthread_mutex_alloc(void) {
   return kthread_mutex_alloc();
 }
@@ -131,6 +134,8 @@ int sys_kthread_mutex_unlock(void) {
   return kthread_mutex_unlock(mutex_id);
 }
 
+// edited by: Junkai Xia
+// Add syscall wrappers for thread creation, identification, exit, and join.
 int
 sys_kthread_id(void)
 {
