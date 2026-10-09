@@ -42,6 +42,8 @@ sys_getpid(void)
   return proc->pid;
 }
 
+// edited by: Junkai Xia
+// Use growproc_sbrk to synchronize the old-size read and memory update.
 int
 sys_sbrk(void)
 {
