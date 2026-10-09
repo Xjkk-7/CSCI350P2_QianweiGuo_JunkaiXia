@@ -17,6 +17,8 @@ exec(char *path, char **argv)
   struct inode *ip;
   struct proghdr ph;
   pde_t *pgdir;
+  // edited by: Junkai Xia
+  // Coordinate exec through execstart, execabort, and execcommit.
   if(execstart() < 0) return -1;
   begin_op();
   if((ip = namei(path)) == 0){
