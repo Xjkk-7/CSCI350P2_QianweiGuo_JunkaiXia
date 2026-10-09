@@ -7,6 +7,8 @@
 #include "proc.h"
 #include "spinlock.h"
 
+//edited by: Junkai Xia
+
 void clearThread(struct thread * t);
 
 struct {
@@ -38,6 +40,7 @@ pinit(void)
   initlock(&mtable.lock, "mtable");
 }
 
+// Allocate and initialize threads, reusing exited slots only when safe.
 struct thread*
 allocthread(struct proc *p)
 {
@@ -165,6 +168,7 @@ userinit(void)
   release(&ptable.lock);
 }
 
+// Synchronize process memory updates and check lifecycle restrictions.
 // Grow current process's memory by n bytes.
 // Return 0 on success, -1 on failure.
 int
@@ -209,7 +213,7 @@ bad:
   return -1;
 }
 
-
+// Read the old size and update process memory under one lock.
 int
 growproc_sbrk(int n)
 {
@@ -341,6 +345,7 @@ exit(void)
   panic("zombie exit");
 }
 
+// Release a terminated thread's kernel stack and reset its fields.
 void
 clearThread(struct thread *t)
 {
@@ -809,6 +814,7 @@ int kthread_mutex_unlock(int mutex_id) {
   return 0;
 }
 
+// Return the calling thread's identifier.
 int
 kthread_id(void)
 {
@@ -817,6 +823,7 @@ kthread_id(void)
   return -1;
 }
 
+// Create a runnable thread using the caller-provided user stack.
 int
 kthread_create(void* (*start_func)(), void* stack, int stack_size)
 {
@@ -876,6 +883,7 @@ kthread_create(void* (*start_func)(), void* stack, int stack_size)
   return tid;
 }
 
+// Terminate the calling thread, exiting the process if it is the last live thread.
 void
 kthread_exit(void)
 {
@@ -953,6 +961,7 @@ kthread_join(int thread_id)
   return 0;
 }
 
+// Request sibling termination and wait until all siblings have stopped.
 // Caller must hold ptable.lock.
 static int
 kill_others(int for_exec)
@@ -1001,6 +1010,7 @@ kill_all(void)
   kill_others(0);
 }
 
+// Reserve the process for the calling thread's exec operation.
 int
 execstart(void)
 {
@@ -1017,6 +1027,7 @@ execstart(void)
   return 0;
 }
 
+// Release the exec reservation when loading the new program fails.
 void
 execabort(void)
 {
@@ -1028,6 +1039,7 @@ execabort(void)
   release(&ptable.lock);
 }
 
+// Stop siblings and install the new program's address space.
 int
 execcommit(pde_t *pgdir, uint sz, uint entry, uint sp, char *name)
 {
